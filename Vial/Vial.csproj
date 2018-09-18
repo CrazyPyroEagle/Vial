@@ -5,6 +5,12 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Vial.Mixin\Vial.Mixins.csproj" />
+  </ItemGroup>
   <ItemGroup>
     <Reference Include="Apple">
       <HintPath>..\..\..\..\Desktop\ToS Unity\managed\Apple.dll</HintPath>
