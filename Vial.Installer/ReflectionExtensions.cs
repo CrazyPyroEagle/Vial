@@ -20,7 +20,7 @@ namespace Vial.Installer
         private const MethodAttributes CopyMask = MethodAttributes.RequireSecObject | MethodAttributes.HideBySig | MethodAttributes.Static;
         private const MethodAttributes CopyAttr = MethodAttributes.PrivateScope | MethodAttributes.SpecialName;
 
-        public static Action<MethodDef> ApplyMixin(this MethodBase mixin, AssemblyPatcher patcher) => (MethodDef original) =>
+        public static Action<MethodDef> ApplyMixin(this MethodBase mixin, PatchConfiguration patch) => original =>
         {
             CilBody originalBody = original.Body;
             MethodBody mixinBody = mixin.GetMethodBody();
@@ -51,7 +51,7 @@ namespace Vial.Installer
                 switch (inst.Operand)
                 {
                     case FieldInfo field:
-                        inst.Operand = patcher.ResolveOrImport(original.Module, field);
+                        inst.Operand = patch.ResolveOrImport(original.Module, field);
                         break;
                     case MethodBase method:
                         if (method.IsDefined(typeof(BaseDependencyAttribute)))
@@ -60,10 +60,10 @@ namespace Vial.Installer
                             inst.Operand = baseCopy;
                             break;
                         }
-                        inst.Operand = patcher.ResolveOrImport(original.Module, method);
+                        inst.Operand = patch.ResolveOrImport(original.Module, method);
                         break;
                     case Type type:
-                        inst.Operand = patcher.ResolveOrImport(original.Module, type);
+                        inst.Operand = patch.ResolveOrImport(original.Module, type);
                         break;
                     case byte[] blob:
                         throw new NotImplementedException("how do you import this?");
@@ -92,28 +92,72 @@ namespace Vial.Installer
             }
         };
 
-        public static IType ResolveOrImport(this AssemblyPatcher patcher, ModuleDef module, Type type)
+        public static Action<MethodDef> ApplyInject(this MethodBase inject, PatchConfiguration patch) => stub =>
         {
-            if (patcher.TryResolve(module, type.ToSignature(), out TypeDef def)) return def;
-            ITypeDefOrRef typeRef = module.Import(type);
-            typeRef.Name = type.GetName().SimpleName();
-            return typeRef;
+            CilBody stubBody = stub.Body;
+            MethodBody injectBody = inject.GetMethodBody();
+            List<Instruction> originalIL = new List<Instruction>(stubBody.Instructions);
+            List<Local> originalLocals = new List<Local>(stubBody.Variables);
+            stubBody.Variables.Clear();
+            foreach (LocalVariableInfo local in injectBody.LocalVariables.OrderBy(lvi => lvi.LocalIndex)) stubBody.Variables.Add(stub.Module.ToDNLib(local));
+            List<Instruction> mixinIL = new CilParser(inject.Module, stubBody.Variables, injectBody.GetILAsByteArray()).Parse();
+            mixinIL.SimplifyMacros(stubBody.Variables, stub.Parameters);
+            IList<Instruction> newIL = stubBody.Instructions;
+            newIL.Clear();
+            foreach (Instruction inst in mixinIL)
+            {
+                switch (inst.Operand)
+                {
+                    case FieldInfo field:
+                        inst.Operand = patch.ResolveOrImport(stub.Module, field);
+                        break;
+                    case MethodBase method:
+                        if (method.IsDefined(typeof(BaseDependencyAttribute))) throw new InvalidOperationException("attempt to inject a body with a base dependency call");
+                        inst.Operand = patch.ResolveOrImport(stub.Module, method);
+                        break;
+                    case Type type:
+                        inst.Operand = patch.ResolveOrImport(stub.Module, type);
+                        break;
+                    case byte[] blob:
+                        throw new NotImplementedException("how do you import this?");
+                    case MemberInfo member:
+                        throw new NotImplementedException("how do you import this?");
+                }
+                newIL.Add(inst);
+            }
+            stubBody.ExceptionHandlers.Clear();
+            foreach (ExceptionHandlingClause ehc in injectBody.ExceptionHandlingClauses) stubBody.ExceptionHandlers.Add(ehc.ToDNLib(stub.Module, newIL));
+            stubBody.OptimizeMacros();
+        };
+
+        public static ITypeDefOrRef ResolveOrImport(this PatchConfiguration patch, ModuleDef module, Type type)
+        {
+            if (patch.TryResolve(module, type.ToSignature(), out TypeDef def)) return def;
+            type = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType(type.GetName())).First(t => t != null);
+            return module.Import(type);
+            /*string fullName = type.GetName();
+            int nsEnd = fullName.LastIndexOf('.');
+            string ns = null, name = fullName;
+            if (nsEnd >= 0)
+            {
+                ns = fullName.Substring(0, nsEnd);
+                name = fullName.Substring(nsEnd + 1);
+            }
+            return new TypeRefUser(module, ns, name, new AssemblyNameInfo(type.Assembly.GetName()).ToAssemblyRef());//new AssemblyRefUser(module, type.Module.Name.Substring(0, type.Module.Name.Length - 4)));*/
         }
 
-        public static IField ResolveOrImport(this AssemblyPatcher patcher, ModuleDef module, FieldInfo field)
+        public static IField ResolveOrImport(this PatchConfiguration patch, ModuleDef module, FieldInfo field)
         {
-            if (patcher.TryResolve(module, field.ToSignature(), out FieldDef def)) return def;
+            if (patch.TryResolve(module, field.ToSignature(), out FieldDef def)) return def;
             MemberRef fieldRef = module.Import(field);
             fieldRef.Name = field.GetName();
             return fieldRef;
         }
 
-        public static IMethod ResolveOrImport(this AssemblyPatcher patcher, ModuleDef module, MethodBase method)
+        public static IMethod ResolveOrImport(this PatchConfiguration patch, ModuleDef module, MethodBase method)
         {
-            if (patcher.TryResolve(module, method.ToSignature(), out MethodDef def)) return def;
-            IMethod methodRef = module.Import(method);
-            methodRef.Name = method.GetName();
-            return methodRef;
+            if (patch.TryResolve(module, method.ToSignature(), out MethodDef def)) return def;
+            return new MemberRefUser(module, method.GetName(), module.ToSig(method.ToSignature()), patch.ResolveOrImport(module, method.DeclaringType));
         }
 
         public static UTF8String FindUnusedMethodName(this TypeDef type, UTF8String baseName)
@@ -149,9 +193,53 @@ namespace Vial.Installer
 
         public static TypeSignature ToMixinSignature(this Type type) => TypeSignature.Get(type.FullName.Replace('+', '/'), type.IsValueType ? TypeKind.Value : TypeKind.Class);
         public static TypeSignature ToSignature(this Type type) => TypeSignature.Get(type.GetName(), type.IsValueType ? TypeKind.Value : TypeKind.Class);
+
         public static FieldSignature ToSignature(this FieldInfo field) => field.DeclaringType.ToSignature().Field(field.GetName(), field.FieldType.ToSignature());
-        public static MethodSignature ToSignature(this MethodBase method) => method.DeclaringType.ToSignature().Method(method.GetName(), method.CallingConvention.ToPatcher(), method.GetParameters().Select(pi => pi.ParameterType.ToSignature()));
+        public static MethodSignature ToSignature(this MethodBase method) => method.DeclaringType.ToSignature().Method(method.GetName(), method.CallingConvention.ToPatcher(), method.GetParameters().Select(pi => pi.ParameterType.ToSig()));
         public static ParameterSignature ToSignature(this ParameterInfo parameter) => ((MethodInfo)parameter.Member).ToSignature().Parameters[parameter.Position];
+
+        public static Func<ModuleDef, TypeSig> ToSig(this Type type) => module =>
+        {
+            if (type == typeof(void)) return module.CorLibTypes.Void;
+            if (type == typeof(bool)) return module.CorLibTypes.Boolean;
+            if (type == typeof(char)) return module.CorLibTypes.Char;
+            if (type == typeof(sbyte)) return module.CorLibTypes.SByte;
+            if (type == typeof(byte)) return module.CorLibTypes.Byte;
+            if (type == typeof(short)) return module.CorLibTypes.Int16;
+            if (type == typeof(ushort)) return module.CorLibTypes.UInt16;
+            if (type == typeof(int)) return module.CorLibTypes.Int32;
+            if (type == typeof(uint)) return module.CorLibTypes.UInt32;
+            if (type == typeof(long)) return module.CorLibTypes.Int64;
+            if (type == typeof(ulong)) return module.CorLibTypes.UInt64;
+            if (type == typeof(float)) return module.CorLibTypes.Single;
+            if (type == typeof(double)) return module.CorLibTypes.Double;
+            if (type == typeof(string)) return module.CorLibTypes.String;
+            if (type == typeof(TypedReference)) return module.CorLibTypes.TypedReference;
+            if (type == typeof(IntPtr)) return module.CorLibTypes.IntPtr;
+            if (type == typeof(UIntPtr)) return module.CorLibTypes.UIntPtr;
+            if (type == typeof(object)) return module.CorLibTypes.Object;
+
+            Type element = type.GetElementType();
+            if (element == null) return type.IsValueType ? (TypeSig)new ValueTypeSig(Ref(type)) : new ClassSig(Ref(type));
+            TypeSig next = element.ToSig()(module);
+            if (type.IsArray) return type.GetArrayRank() == 1 ? (TypeSig)new SZArraySig(next) : new ArraySig(next);
+            if (type.IsPointer) return new PtrSig(next);
+            throw new ArgumentException("unrecognised type");
+
+            TypeRefUser Ref(Type getType)
+            {
+                string fullName = getType.FullName.Replace('+', '/');
+                int index = fullName.LastIndexOf('.');
+                string ns = fullName.Substring(0, index < 0 ? index = 0 : index++);
+                return GetRef(ns, fullName.Substring(index));
+            }
+
+            TypeRefUser GetRef(string ns, string name)
+            {
+                int newIndex = name.LastIndexOf('/');
+                return newIndex < 0 ? new TypeRefUser(module, ns, name, module) : new TypeRefUser(module, "", name.Substring(newIndex + 1), GetRef(ns, name.Substring(0, newIndex)));
+            }
+        };
 
         public static string GetName(this Type type) => type.GetCustomAttribute<NameAttribute>()?.Target ?? type.FullName.Replace('+', '/');
         public static string GetName(this MemberInfo member) => member.GetCustomAttribute<NameAttribute>()?.Target ?? member.Name;

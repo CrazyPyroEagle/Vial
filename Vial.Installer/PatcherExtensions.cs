@@ -7,6 +7,8 @@ namespace Vial.Installer
 {
     static class PatcherExtensions
     {
+        private const SigComparerOptions ComparerOptions = SigComparerOptions.IgnoreModifiers | SigComparerOptions.DontCompareReturnType | SigComparerOptions.DontCompareTypeScope;
+
         public static TType Substitute<TType>(this IReadOnlyDictionary<TType, TType> substitutions, TType value)
         {
             while (substitutions.TryGetValue(value, out TType newValue)) value = newValue;
@@ -54,18 +56,18 @@ namespace Vial.Installer
         }
 
         public static TypeDef GetDefinition(this ModuleDef module, TypeSignature type) => module.Find(type.FullName, false);
-        public static FieldDef GetDefinition(this TypeDef type, FieldSignature field) => type.FindFieldCheckBaseType(field.Name, type.Module.ToSig(field), SigComparerOptions.IgnoreModifiers | SigComparerOptions.DontCompareReturnType | SigComparerOptions.DontCompareTypeScope);
-        public static MethodDef GetDefinition(this TypeDef type, MethodSignature method) => type.FindMethodCheckBaseType(method.Name, type.Module.ToSig(method), SigComparerOptions.IgnoreModifiers | SigComparerOptions.DontCompareReturnType | SigComparerOptions.DontCompareTypeScope, type.Module);
+        public static FieldDef GetDefinition(this TypeDef type, FieldSignature field) => type.FindFieldCheckBaseType(field.Name, type.Module.ToSig(field), ComparerOptions);
+        public static MethodDef GetDefinition(this TypeDef type, MethodSignature method) => type.FindMethodCheckBaseType(method.Name, type.Module.ToSig(method), ComparerOptions, type.Module);
         public static Parameter GetDefinition(this MethodDef method, ParameterSignature parameter) => method.Parameters[parameter.Index];
         public static bool TryGetDefinition(this ModuleDef module, TypeSignature type, out TypeDef definition) => (definition = module.GetDefinition(type)) != null;
         public static bool TryGetDefinition(this TypeDef type, FieldSignature field, out FieldDef definition) => (definition = type.GetDefinition(field)) != null;
         public static bool TryGetDefinition(this TypeDef type, MethodSignature method, out MethodDef definition) => (definition = type.GetDefinition(method)) != null;
         public static bool TryGetDefinition(this MethodDef method, ParameterSignature parameter, out Parameter definition) => (definition = method.GetDefinition(parameter)) != null;
 
-        public static bool CompareSignatures(this TypeSignature signature, TypeSig reference) => signature.FullName == reference.FullName;
+        /*public static bool CompareSignatures(this TypeSignature signature, TypeSig reference) => signature.FullName == reference.FullName;
         public static bool CompareSignatures(this FieldSignature signature, IField reference) => signature.Name == reference.Name.String;
         public static bool CompareSignatures(this MethodSignature signature, MethodDef reference) => signature.Name == reference.Name && signature.Parameters.Zip(reference.Parameters, CompareSignatures).All(b => b);
-        public static bool CompareSignatures(this ParameterSignature signature, Parameter reference) => signature.Index == reference.Index && signature.ParameterType.CompareSignatures(reference.Type);
+        public static bool CompareSignatures(this ParameterSignature signature, Parameter reference) => signature.Index == reference.Index && new SigComparer(ComparerOptions).Equals(signature.ParameterType, reference.Type);*/
 
         public static TypeSig ToSig(this ModuleDef module, TypeSignature signature)
         {
@@ -108,7 +110,7 @@ namespace Vial.Installer
         }
 
         public static FieldSig ToSig(this ModuleDef module, FieldSignature signature) => new FieldSig(module.ToSig(signature.FieldType));
-        public static MethodSig ToSig(this ModuleDef module, MethodSignature signature) => new MethodSig(signature.CallConvention.ToDNLib(), 0, module.CorLibTypes.Void, signature.Parameters.Select(p => module.ToSig(p.ParameterType)).ToArray());
+        public static MethodSig ToSig(this ModuleDef module, MethodSignature signature) => new MethodSig(signature.CallConvention.ToDNLib(), 0, module.CorLibTypes.Void, signature.Parameters.Select(p => p.ParameterType(module)).ToArray());
 
         public static ITypeDefOrRef ToRef(this ModuleDef module, TypeSignature signature) => module.ToSig(signature).ToTypeDefOrRef();
         public static MemberRef ToRef(this ModuleDef module, FieldSignature signature) => new MemberRefUser(module, signature.Name, module.ToSig(signature), module.ToRef(signature.DeclaringType));
@@ -116,9 +118,9 @@ namespace Vial.Installer
 
         public static TypeSignature ToSignature(this TypeSig type) => TypeSignature.Get(type.FullName, type.IsValueType ? TypeKind.Value : TypeKind.Class);
         public static FieldSignature ToFieldSignature(this MemberRef field) => field.DeclaringType.ToTypeSig().ToSignature().Field(field.Name, field.FieldSig.Type.ToSignature());
-        public static MethodSignature ToMethodSignature(this MemberRef method) => method.DeclaringType.ToTypeSig().ToSignature().Method(method.Name, method.MethodSig.CallingConvention.ToPatcher(), method.MethodSig.Params.Select(ToSignature).ToArray());
+        //public static MethodSignature ToMethodSignature(this MemberRef method) => method.DeclaringType.ToTypeSig().ToSignature().Method(method.Name, method.MethodSig.CallingConvention.ToPatcher(), method.MethodSig.Params.ToArray());
 
-        public static bool IsAssignable(this TypeSig src, TypeSig dst, AccessMode mode) => new TypeEqualityComparer(0).Equals(src, dst);         // TODO: Improve this check (base types, etc)
+        public static bool IsAssignable(this TypeSig src, TypeSig dst, AccessMode mode) => new TypeEqualityComparer(ComparerOptions).Equals(src, dst);         // TODO: Improve this check (base types, etc)
 
         public static CallingConvention ToDNLib(this CallConvention convention)
         {

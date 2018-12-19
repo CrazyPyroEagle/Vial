@@ -11,94 +11,80 @@ namespace Vial.Installer
 {
     class AssemblyPatcher
     {
-        private const SigComparerOptions ComparerOptions = SigComparerOptions.IgnoreModifiers | SigComparerOptions.DontCompareTypeScope | SigComparerOptions.DontCompareReturnType;
+        private readonly List<PatchConfiguration> configurations;
 
-        private readonly List<TypeDependency> typeDependencies;
-        private readonly Dictionary<TypeSignature, TypeSignature> typeSubstitutions;
-        private readonly Dictionary<FieldSignature, FieldSignature> fieldSubstitutions;
-        private readonly Dictionary<MethodSignature, MethodSignature> methodSubstitutions;
-        private readonly Dictionary<MethodSignature, List<Action<MethodDef>>> mixins;
+        public AssemblyPatcher() => configurations = new List<PatchConfiguration>();
 
-        public AssemblyPatcher()
+        public void Add(PatchConfiguration configuration) => configurations.Add(configuration);
+        
+        public void Patch(Func<UTF8String, ModuleDef> loader)
         {
-            typeDependencies = new List<TypeDependency>();
-            typeSubstitutions = new Dictionary<TypeSignature, TypeSignature>(new GenericEqualityComparer<TypeSignature>((a, b) => a == b));
-            fieldSubstitutions = new Dictionary<FieldSignature, FieldSignature>(new GenericEqualityComparer<FieldSignature>((a, b) => a == b));
-            methodSubstitutions = new Dictionary<MethodSignature, MethodSignature>(new GenericEqualityComparer<MethodSignature>((a, b) => a == b));
-            mixins = new Dictionary<MethodSignature, List<Action<MethodDef>>>();
+            foreach (PatchConfiguration patch in configurations)
+            {
+                patch.Patch(loader(patch.TargetModule));
+                foreach (string required in patch.RequiredModules) patch.PatchDependency(loader(required));
+                patch.Validate();
+            }
         }
+    }
+
+    class PatchConfiguration
+    {       // TODO Replace string with UTF8String wherever necessary
+        protected const SigComparerOptions ComparerOptions = SigComparerOptions.IgnoreModifiers | SigComparerOptions.DontCompareTypeScope | SigComparerOptions.DontCompareReturnType;
+
+        public string PatchName { get; }
+        public string TargetModule { get; }
+        public IEnumerable<string> RequiredModules { get; }
+
+        protected readonly HashSet<string> dependencyModules;
+        protected readonly Dictionary<TypeSignature, TypeSignature> typeSubstitutions;
+        protected readonly Dictionary<FieldSignature, FieldSignature> fieldSubstitutions;
+        protected readonly Dictionary<MethodSignature, MethodSignature> methodSubstitutions;
+        protected readonly Dictionary<MethodSignature, List<Action<MethodDef>>> mixins;
+        protected readonly List<TypeInject> typeInjects;
+        protected readonly List<TypeDependency> typeDependencies;
+        protected readonly List<TypeMixin> typeMixins;
 
         public event Action<ModuleDef> PatchModule;
 
+        public PatchConfiguration(string patchName, string targetAssembly, IEnumerable<string> requiredAssemblies)
+        {
+            PatchName = patchName;
+            TargetModule = targetAssembly;
+            RequiredModules = requiredAssemblies;
+            dependencyModules = new HashSet<string>();
+            typeDependencies = new List<TypeDependency>();
+            typeSubstitutions = new Dictionary<TypeSignature, TypeSignature>();
+            fieldSubstitutions = new Dictionary<FieldSignature, FieldSignature>();
+            methodSubstitutions = new Dictionary<MethodSignature, MethodSignature>();
+            mixins = new Dictionary<MethodSignature, List<Action<MethodDef>>>();
+            typeInjects = new List<TypeInject>();
+            typeDependencies = new List<TypeDependency>();
+            typeMixins = new List<TypeMixin>();
+        }
+
+        public void AddInjected(TypeInject inject) => typeInjects.Add(inject);
         public void AddDependency(TypeDependency dependency) => typeDependencies.Add(dependency);
+        public void AddMixin(TypeMixin mixin)
+        {
+            typeMixins.Add(mixin);
+            foreach (MethodMixin mm in mixin.Mixins)
+            {
+                if (!mixins.TryGetValue(mm.Signature, out List<Action<MethodDef>> actions)) mixins.Add(mm.Signature, actions = new List<Action<MethodDef>>());
+                actions.Add(mm.Mixin);
+            }
+        }
 
         public void AddSubstitution(TypeSignature original, TypeSignature substitution) => typeSubstitutions.Add(original, substitution);
         public void AddSubstitution(FieldSignature original, FieldSignature substitution) => fieldSubstitutions.Add(original, substitution);
         public void AddSubstitution(MethodSignature original, MethodSignature substitution) => methodSubstitutions.Add(original, substitution);
         public void AddMixin(MethodSignature target, Action<MethodDef> mixin) => mixins.MergeAdd(target, mixin);
 
-        public void Patch(ModuleDef module)
-        {
-            HashSet<MethodSig> originals = new HashSet<MethodSig>();
-            foreach (TypeDependency type in typeDependencies)
-            {
-                TypeDef typeDef = Resolve(module, type.Signature);
-                typeDef.MakeAccessible(type.AccessLevel);
-                foreach (FieldDependency field in type.Fields)
-                {
-                    FieldDef fieldDef = Resolve(module, field.Signature);
-                    fieldDef.MakeAccessible(field.AccessLevel);
-                    fieldDef.IsInitOnly &= field.IsInitOnly;
-                }
-                foreach (MethodDependency method in type.Methods)
-                {
-                    MethodDef methodDef = Resolve(module, method.Signature);
-                    methodDef.MakeAccessible(method.AccessLevel);
-                    if (method.ReturnType != null) module.ToSig(method.ReturnType).IsAssignable(methodDef.ReturnType, AccessMode.Write);
-                    // TODO: Add other checks (e.g. virtual)
-                    foreach (ParameterDependency parameter in method.Parameters)
-                    {
-                        ParamDef parameterDef = Resolve(module, parameter.Signature);
-                        parameterDef.MakeAccessible(parameter.AccessMode);
-                    }
-                }
-                foreach (MethodSig original in type.Originals.Select(module.ToSig)) originals.Add(original);
-            }
-            foreach (KeyValuePair<MethodSignature, List<Action<MethodDef>>> method in this.mixins)
-            {
-                MethodDef methodDef = Resolve(module, method.Key);
-                foreach (Action<MethodDef> action in method.Value) action(methodDef);
-            }
-            PatchModule?.Invoke(module);
-            TypeEqualityComparer typeComparer = new TypeEqualityComparer(ComparerOptions);
-            SignatureEqualityComparer comparer = new SignatureEqualityComparer(ComparerOptions);
-            Dictionary<TypeSig, TypeSig> typeSubstitutions = this.typeSubstitutions.GroupBy(p => module.ToSig(p.Key), p => module.ToSig(p.Value), typeComparer).Where(g => !typeComparer.Equals(g.Key, g.First())).ToDictionary(g => g.Key, Enumerable.First, typeComparer);
-            Dictionary<FieldSig, FieldSig> fieldSubstitutions = this.fieldSubstitutions.GroupBy(p => module.ToSig(p.Key), p => module.ToSig(p.Value), comparer).Where(g => !comparer.Equals(g.Key, g.First())).ToDictionary(g => g.Key, Enumerable.First, comparer);
-            Dictionary<MethodSig, MethodSig> methodSubstitutions = this.methodSubstitutions.GroupBy(p => module.ToSig(p.Key), p => module.ToSig(p.Value), comparer).Where(g => !comparer.Equals(g.Key, g.First())).ToDictionary(g => g.Key, Enumerable.First, comparer);
-            foreach (TypeDef type in module.GetTypes())
-            {
-                foreach (FieldDef field in type.Fields)
-                {
-                    while (fieldSubstitutions.TryGetValue(field.FieldSig, out FieldSig newFieldSig)) field.FieldSig = newFieldSig;
-                    field.FieldType = field.FieldType.ApplyToLeaf(typeSubstitutions.Substitute);
-                }
-                foreach (MethodDef method in type.Methods)
-                {
-                    method.MethodSig = methodSubstitutions.Substitute(method.MethodSig);
-                    foreach (Parameter parameter in method.Parameters) parameter.Type = parameter.Type.ApplyToLeaf(typeSubstitutions.Substitute);
-                    method.ReturnType = method.ReturnType.ApplyToLeaf(typeSubstitutions.Substitute);
-                }
-            }
-        }
-
         public bool TryResolve(ModuleDef module, TypeSignature signature, out TypeDef def) => module.TryGetDefinition(typeSubstitutions.Substitute(signature), out def);
 
         public bool TryResolve(ModuleDef module, FieldSignature signature, out FieldDef def) => (def = null) == null && TryResolve(module, (signature = fieldSubstitutions.Substitute(signature)).DeclaringType, out TypeDef type) && type.TryGetDefinition(signature, out def);
 
-        public bool TryResolve(ModuleDef module, MethodSignature signature, out MethodDef def)
-        {
-            return (def = null) == null && TryResolve(module, (signature = methodSubstitutions.Substitute(signature)).DeclaringType, out TypeDef type) && type.TryGetDefinition(signature, out def);
-        }
+        public bool TryResolve(ModuleDef module, MethodSignature signature, out MethodDef def) => (def = null) == null && TryResolve(module, (signature = SubstituteArguments(module, methodSubstitutions.Substitute(signature))).DeclaringType, out TypeDef type) && type.TryGetDefinition(signature, out def);
 
         public bool TryResolve(ModuleDef module, ParameterSignature signature, out ParamDef def)
         {
@@ -133,22 +119,153 @@ namespace Vial.Installer
             return definition;
         }
 
-        private MethodSignature SubstituteArguments(MethodSignature signature)
+        internal void Patch(ModuleDef module)
+        {
+            List<TypeDependency> owned = PatchDependency(module, typeDependencies.Concat(typeMixins.Select(m => m.Dependency)));
+            typeDependencies.RemoveAll(owned.Contains);
+            typeMixins.RemoveAll(m => owned.Contains(m.Dependency));
+            HashSet<MethodSig> originals = new HashSet<MethodSig>();
+            foreach (MethodSig original in typeDependencies.SelectMany(t => t.Originals.Select(module.ToSig))) originals.Add(original);
+            foreach (KeyValuePair<MethodSignature, List<Action<MethodDef>>> method in mixins)
+            {
+                MethodDef methodDef = Resolve(module, method.Key);
+                foreach (Action<MethodDef> action in method.Value) action(methodDef);
+            }
+            PatchModule?.Invoke(module);
+            TypeEqualityComparer typeComparer = new TypeEqualityComparer(ComparerOptions);
+            SignatureEqualityComparer comparer = new SignatureEqualityComparer(ComparerOptions);
+            Dictionary<TypeSig, TypeSig> typeSubstitutions = this.typeSubstitutions.GroupBy(p => module.ToSig(p.Key), p => module.ToSig(p.Value), typeComparer).Where(g => !typeComparer.Equals(g.Key, g.First())).ToDictionary(g => g.Key, Enumerable.First, typeComparer);
+            Dictionary<FieldSig, FieldSig> fieldSubstitutions = this.fieldSubstitutions.GroupBy(p => module.ToSig(p.Key), p => module.ToSig(p.Value), comparer).Where(g => !comparer.Equals(g.Key, g.First())).ToDictionary(g => g.Key, Enumerable.First, comparer);
+            Dictionary<MethodSig, MethodSig> methodSubstitutions = this.methodSubstitutions.GroupBy(p => module.ToSig(p.Key), p => module.ToSig(p.Value), comparer).Where(g => !comparer.Equals(g.Key, g.First())).ToDictionary(g => g.Key, Enumerable.First, comparer);
+            foreach (TypeDef type in module.GetTypes())
+            {
+                foreach (FieldDef field in type.Fields)
+                {
+                    while (fieldSubstitutions.TryGetValue(field.FieldSig, out FieldSig newFieldSig)) field.FieldSig = newFieldSig;
+                    field.FieldType = field.FieldType.ApplyToLeaf(typeSubstitutions.Substitute);
+                }
+                foreach (MethodDef method in type.Methods)
+                {
+                    method.MethodSig = methodSubstitutions.Substitute(method.MethodSig);
+                    foreach (Parameter parameter in method.Parameters) parameter.Type = parameter.Type.ApplyToLeaf(typeSubstitutions.Substitute);
+                    method.ReturnType = method.ReturnType.ApplyToLeaf(typeSubstitutions.Substitute);
+                }
+            }
+        }
+
+        internal void PatchDependency(ModuleDef module)
+        {
+            List<TypeDependency> owned = PatchDependency(module, typeDependencies);
+            typeDependencies.RemoveAll(owned.Contains);
+        }
+
+        internal void Validate()
+        {
+            if (typeDependencies.Count > 0) throw new PatchException("failed to locate all dependencies");
+            if (typeMixins.Count > 0) throw new PatchException("failed to locate all mixed types");
+        }
+
+        protected List<TypeDependency> PatchDependency(ModuleDef module, IEnumerable<TypeDependency> dependencies)
+        {
+            List<TypeDependency> owned = new List<TypeDependency>();
+            foreach (TypeDependency type in dependencies)
+            {
+                if (!TryResolve(module, type.Descriptor.Signature, out TypeDef typeDef)) continue;
+                owned.Add(type);
+                typeDef.MakeAccessible(type.Descriptor.AccessLevel);
+                foreach (FieldDescriptor field in type.FieldDependencies)
+                {
+                    FieldDef fieldDef = Resolve(module, field.Signature);
+                    fieldDef.MakeAccessible(field.AccessLevel);
+                    fieldDef.IsInitOnly &= field.IsInitOnly;
+                }
+                foreach (MethodDescriptor method in type.MethodDependencies)
+                {
+                    MethodDef methodDef = Resolve(module, method.Signature);
+                    methodDef.MakeAccessible(method.AccessLevel);
+                    if (method.ReturnType != null && !module.ToSig(typeSubstitutions.Substitute(method.ReturnType)).IsAssignable(methodDef.ReturnType, AccessMode.Write)) throw new PatchException("dependency and original have incompatible types");
+                    // TODO: Add other checks (e.g. virtual)
+                    foreach (ParameterDescriptor parameter in method.Parameters)
+                    {
+                        ParamDef parameterDef = Resolve(module, parameter.Signature);
+                        parameterDef.MakeAccessible(parameter.AccessMode);
+                    }
+                }
+            }
+            return owned;
+        }
+
+        protected TypeSig Substitute(TypeSig sig) => sig.ApplyToLeaf(s => sig.Module.ToSig(typeSubstitutions.Substitute(s.ToSignature())));
+
+        protected MethodSignature SubstituteArguments(ModuleDef module, MethodSignature signature)
         {
             bool changed = false;
-            List<TypeSignature> newParams = new List<TypeSignature>();
+            List<Func<ModuleDef, TypeSig>> newParams = new List<Func<ModuleDef, TypeSig>>();
+            SigComparer comparer = new SigComparer(ComparerOptions);
             foreach (ParameterSignature param in signature.Parameters)
             {
-                if (typeSubstitutions.TryGetValue(param.ParameterType, out TypeSignature typeSub))
-                {
-                    changed = true;
-                    newParams.Add(typeSubstitutions.Substitute(typeSub));
-                    newParams.Add(typeSub);
-                    break;
-                }
-                newParams.Add(param.ParameterType);
+                TypeSig typeSub = Substitute(param.ParameterType(module));
+                if (!comparer.Equals(typeSub, param.ParameterType(module))) changed = true;
+                newParams.Add(Safe(typeSub));
             }
             return changed ? signature.DeclaringType.Method(signature.Name, signature.CallConvention, newParams) : signature;
+
+            Func<ModuleDef, TypeSig> Safe(TypeSig sig) => m =>
+            {
+                if (module != m) throw new ArgumentException("incompatible module");
+                return sig;
+            };
+        }
+
+        // TODO Check for collisions (=> change member name) & ensure this runs after CreateDefinition(ModuleDef, TypeSignature)
+        protected FieldDef CreateDefinition(ModuleDef module, FieldSignature signature) => new FieldDefUser(signature.Name, module.ToSig(signature))
+        {
+            DeclaringType = Resolve(module, signature.DeclaringType)
+        };
+
+        protected MethodDef CreateDefinition(ModuleDef module, MethodSignature signature) => new MethodDefUser(signature.Name, module.ToSig(signature))
+        {
+            DeclaringType = Resolve(module, signature.DeclaringType)
+        };
+
+        protected interface IInjecter
+        {
+            IAppliedInjecter Create(ModuleDef module);
+        }
+
+        protected interface IAppliedInjecter
+        {
+            void Inject();
+        }
+
+        protected class Injecter<TSig, TDef> : IInjecter where TSig : class where TDef : class
+        {
+            private readonly TSig signature;
+            private readonly Action<TDef> injecter;
+            private readonly Func<ModuleDef, TSig, TDef> factory;
+
+            public Injecter(TSig signature, Action<TDef> injecter, Func<ModuleDef, TSig, TDef> factory)
+            {
+                this.signature = signature;
+                this.injecter = injecter;
+                this.factory = factory;
+            }
+
+            public IAppliedInjecter Create(ModuleDef module) => new AppliedInjecter<TDef>(injecter, factory(module, signature));
+        }
+
+        protected class AppliedInjecter<TDef> : IAppliedInjecter where TDef : class
+        {
+            private readonly Action<TDef> injecter;
+            private readonly TDef definition;
+
+            public AppliedInjecter(Action<TDef> injecter, TDef definition)
+            {
+                this.injecter = injecter;
+                this.definition = definition;
+            }
+
+            public void Inject() => injecter(definition);
         }
 
         private class GenericEqualityComparer<T> : IEqualityComparer<T>

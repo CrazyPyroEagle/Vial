@@ -1,6 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net20</TargetFramework>
+    <TargetFramework>net46</TargetFramework>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <LangVersion>latest</LangVersion>
@@ -10,6 +10,10 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Vial.Mixin\Vial.Mixins.csproj" />
+    <ProjectReference Include="..\Vial.Analyzer\Vial.Analyzer\Vial.Analyzer.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <OutputItemType>Analyzer</OutputItemType>
+    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
     <Reference Include="Apple">

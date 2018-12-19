@@ -3,9 +3,10 @@ using System.Collections;
 using UnityEngine;
 using Vial.Mixins;
 
+[module: Patch("Assembly-CSharp"), Required("UnityEngine.CoreModule")]
+
 namespace Vial
 {
-    [Transparent]
     public static class Placeholder { }     // Temporary: exists only to provide public access to a type in this assembly, which will be possible when an API has been written.
 
     [Mixin, Name(typeof(StandardServiceLocator))]
@@ -14,7 +15,8 @@ namespace Vial
         [BaseDependency]
         private void Base(SharedInfoProfile profile, PlatformConfig config) => throw new NotImplementedException();
 
-        public MixinStandardServiceLocator(SharedInfoProfile profile, PlatformConfig config)
+        [Mixin]
+        private MixinStandardServiceLocator(SharedInfoProfile profile, PlatformConfig config)
         {
             Debug.Log("[Vial] This assembly has been compiled with Vial mixins");
             Debug.LogFormat("[Vial] Automatic bug reporting is currently {0}, setting to disabled", profile.AutoBugReportingEnabled ? "enabled" : "disabled");
@@ -26,9 +28,6 @@ namespace Vial
     [Mixin, Name(typeof(LoginSceneController))]
     internal class MixinLoginSceneController
     {
-        [BaseDependency]
-        private IEnumerator Base() => throw new NotImplementedException();
-
         [Dependency]
         private DialogController ShowDialog(string title, string message, DialogDetails.Preset preset = DialogDetails.Preset.OK) => throw new NotImplementedException();
 
@@ -41,6 +40,7 @@ namespace Vial
             [Dependency, Name("$this")]
             private MixinLoginSceneController @this;
 
+            [Mixin]
             private bool MoveNext()
             {
                 bool ret = Base();
