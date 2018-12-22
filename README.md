@@ -24,8 +24,9 @@ If you don't know how to clone the repository and build the project yourself, th
 
 * Making modding more accessible and eventually removing the need to reverse-engineer the game in order to create increasingly complex mods.
 * Improving understanding of the game's structure & logic.
-* Encouraging BlankMediaGames (the developer of Town of Salem) to follow proper cheat-proof procedures, within reason, when maintaining their game.
+* Encouraging BlankMediaGames (the developers of Town of Salem) to follow proper cheat-proof procedures, within reason, when maintaining their game.
 This means, for example, not sending all the players' roles at the start of the game (credit to them, they already do this).
+* Helping BlankMediaGames identify certain bugs.
 
 ### To Do List
 
