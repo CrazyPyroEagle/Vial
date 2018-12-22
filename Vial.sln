@@ -23,6 +23,11 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vial.Analyzer.Vsix", "Vial.
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Vial.Analyzer", "Vial.Analyzer", "{4D7F7877-3E9E-43E7-AE2A-7F6621EF5F14}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{9D97A149-F5F6-44F8-BE91-FBA34018FB88}"
+	ProjectSection(SolutionItems) = preProject
+		README.md = README.md
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
