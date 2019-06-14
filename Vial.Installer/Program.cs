@@ -27,7 +27,12 @@ namespace Vial.Installer
                 Title = "Save the patched APK as",
                 Filter = "Android Package|*.apk"
             };
-            if (open.ShowDialog() == DialogResult.OK && save.ShowDialog() == DialogResult.OK)
+            if (open.ShowDialog() != DialogResult.OK)
+            {
+                return;
+            }
+            save.FileName = Path.GetFileNameWithoutExtension(open.FileName) + "-modded" + Path.GetExtension(open.FileName);
+            if (save.ShowDialog() == DialogResult.OK)
             {
                 File.Delete(save.FileName);
                 using (ZipArchive archive = new ZipArchive(open.OpenFile(), ZipArchiveMode.Read), patched = new ZipArchive(save.OpenFile(), ZipArchiveMode.Update))

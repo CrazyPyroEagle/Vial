@@ -19,8 +19,11 @@ namespace Vial
         private MixinStandardServiceLocator(SharedInfoProfile profile, PlatformConfig config)
         {
             Debug.Log("[Vial] This assembly has been compiled with Vial mixins");
-            Debug.LogFormat("[Vial] Automatic bug reporting is currently {0}, setting to disabled", profile.AutoBugReportingEnabled ? "enabled" : "disabled");
-            profile.AutoBugReportingEnabled = false;
+            if (profile.AutoBugReportingEnabled)
+            {
+                Debug.Log("[Vial] Automatic bug reporting is currently enabled, setting to disabled");
+                profile.AutoBugReportingEnabled = false;
+            }
             Base(profile, config);
         }
     }

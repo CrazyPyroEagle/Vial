@@ -19,7 +19,7 @@ namespace Vial.Mixins
     /// <summary>
     /// Declare that this module contains dependencies on types inside the given assembly.
     /// </summary>
-    [AttributeUsage(AttributeTargets.Module)]
+    [AttributeUsage(AttributeTargets.Module, AllowMultiple = true)]
     public class RequiredAttribute : Attribute
     {
         public string Assembly { get; }
